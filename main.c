@@ -1,14 +1,18 @@
-#include "TM4C123.h"   // Using Keil CMSIS-style header
+#include "TM4C123.h"   // CMSIS header for TM4C123
 
 #define TRIG   (1U << 4)   // PA4
 #define ECHO   (1U << 6)   // PB6 (Timer0 CCP0)
 #define IR_PIN (1U << 0)   // PE0
 
-// Motor pins on Port B (L298N)
+// Motor pins - PB0 to PB3
 #define IN1 (1U << 0)
 #define IN2 (1U << 1)
 #define IN3 (1U << 2)
 #define IN4 (1U << 3)
+
+// LED pins on Port F
+#define RED_LED   (1U << 1)
+#define GREEN_LED (1U << 3)
 
 // Function prototypes
 void delayMs(int n);
@@ -30,18 +34,18 @@ int main(void)
 
     while (1)
     {
-        dist = measure_distance();
-        ir   = GPIOE->DATA & IR_PIN;
+        dist = measure_distance();       // ultrasonic reading
+        ir   = GPIOE->DATA & IR_PIN;     // IR sensor
 
-        // Stop if obstacle is close
+        // --- OBSTACLE CHECK ---
         if (dist <= 25)
         {
             motor_stop();
             continue;
         }
 
-        // Line following: IR = 0 means BLACK line
-        if (ir == 0)
+        // --- LINE FOLLOWING ---
+        if (ir == 0)   // IR detects black line
         {
             motor_forward();
         }
@@ -55,10 +59,10 @@ int main(void)
 // ===================== PORT INITIALIZATION =====================
 void init_ports(void)
 {
-    // Enable clocks
+    // Enable clocks: Port A, B, E, F
     SYSCTL->RCGCGPIO |= (1U<<0) | (1U<<1) | (1U<<4) | (1U<<5);
 
-    // ===== MOTOR (PB0–PB3) =====
+    // ===== MOTOR PINS (PB0–PB3) =====
     GPIOB->DIR |= (IN1 | IN2 | IN3 | IN4);
     GPIOB->DEN |= (IN1 | IN2 | IN3 | IN4);
 
@@ -69,13 +73,20 @@ void init_ports(void)
     // ===== ECHO (PB6) =====
     GPIOB->DIR &= ~ECHO;
     GPIOB->DEN |= ECHO;
-    GPIOB->AFSEL |= ECHO;
+    GPIOB->AFSEL |= ECHO;           // enable alternate function
     GPIOB->PCTL &= ~(0xF << 24);
-    GPIOB->PCTL |=  (0x7 << 24);  // T0CCP0 function
+    GPIOB->PCTL |=  (0x7 << 24);    // PB6 → T0CCP0
 
     // ===== IR SENSOR (PE0) =====
     GPIOE->DIR &= ~IR_PIN;
     GPIOE->DEN |= IR_PIN;
+
+    // ===== LED PINS (PF1 RED, PF3 GREEN) =====
+    GPIOF->LOCK = 0x4C4F434B;       // Unlock PF0–PF4
+    GPIOF->CR = 0x1F;
+    GPIOF->DIR |= RED_LED | GREEN_LED;
+    GPIOF->DEN |= RED_LED | GREEN_LED;
+    GPIOF->DATA &= ~(RED_LED | GREEN_LED);   // LEDs off
 }
 
 // ===================== ULTRASONIC INITIALIZATION =====================
@@ -85,42 +96,40 @@ void init_ultrasonic(void)
 
     TIMER0->CTL &= ~1;
     TIMER0->CFG = 0x04;       // 16-bit mode
-    TIMER0->TAMR = 0x17;      // Edge-time, capture
-    TIMER0->CTL |= 0x0C;      // Both edges
+    TIMER0->TAMR = 0x17;      // Edge-time capture mode
+    TIMER0->CTL |= 0x0C;      // Capture both edges
     TIMER0->CTL |= 1;         // Enable timer
 }
 
-// ===================== ULTRASONIC READ =====================
+// ===================== ULTRASONIC MEASUREMENT =====================
 uint32_t measure_distance(void)
 {
     uint32_t rising, falling, ticks;
     float time, distance_cm;
 
-    // Send trigger pulse
+    // Trigger pulse
     GPIOA->DATA &= ~TRIG;
     delayMs(1);
     GPIOA->DATA |= TRIG;
     delayMs(1);
     GPIOA->DATA &= ~TRIG;
 
-    // Wait rising edge
+    // Rising edge
     TIMER0->ICR = 4;
     while ((TIMER0->RIS & 4) == 0);
     rising = TIMER0->TAR;
 
-    // Wait falling edge
+    // Falling edge
     TIMER0->ICR = 4;
     while ((TIMER0->RIS & 4) == 0);
     falling = TIMER0->TAR;
 
-    // Compute ticks
-    if (falling > rising)
+    if (falling >= rising)
         ticks = falling - rising;
     else
         ticks = rising - falling;
 
-    // Convert to time
-    time = (ticks * 62.5e-9f);   // 1 tick = 62.5 ns
+    time = (ticks * 62.5e-9f);     // 62.5ns tick at 16 MHz
     distance_cm = (time * 34300) / 2;
 
     return (uint32_t)distance_cm;
@@ -129,19 +138,26 @@ uint32_t measure_distance(void)
 // ===================== MOTOR CONTROL =====================
 void motor_forward(void)
 {
-    GPIOB->DATA = IN1 | IN3;   // IN1=1 IN2=0, IN3=1 IN4=0
+    GPIOB->DATA = IN1 | IN3;     // Motor A forward, Motor B forward
+
+    // LED STATUS
+    GPIOF->DATA &= ~RED_LED;     // Red OFF
+    GPIOF->DATA |= GREEN_LED;    // Green ON
 }
 
 void motor_stop(void)
 {
     GPIOB->DATA = 0;
+
+    // LED STATUS
+    GPIOF->DATA &= ~GREEN_LED;   // Green OFF
+    GPIOF->DATA |= RED_LED;      // Red ON
 }
 
 // ===================== DELAY =====================
 void delayMs(int n)
 {
-    int i, j;
-    for (i=0; i<n; i++)
-        for (j=0; j<3180; j++)
-            ;
+    volatile int i, j;
+    for (i = 0; i < n; i++)
+        for (j = 0; j < 3180; j++);
 }
