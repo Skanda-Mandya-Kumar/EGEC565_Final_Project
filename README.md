@@ -18,3 +18,14 @@ This is the project for my EGEC 565 project (Line Follower Robot with Auto and M
 | L298N ENB          | jumper ON       | FULL SPEED             |
 | L298N +12V         | Motor power     | Battery (+)            |
 | L298N GND          | Common GND      | TM4C GND + Battery GND |
+
+
+
+┌──────────────────────────────────────────────┐
+│        HC-05 Bluetooth – TM4C123 Pins        │
+├──────────────────────────────────────────────┤
+│ HC-05 TXD  →  TM4C PC4  (UART1 RX)           │
+│ HC-05 RXD  →  TM4C PC5  (UART1 TX)           │
+│ HC-05 VCC  →  5V Supply                      │
+│ HC-05 GND  →  Common Ground                  │
+└──────────────────────────────────────────────┘
