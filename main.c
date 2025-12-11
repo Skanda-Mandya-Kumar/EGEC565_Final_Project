@@ -1,342 +1,237 @@
-#include "inc/tm4c123gh6pm.h"
+#include "TM4C123.h"
 
-#include <stdio.h>
-#include <stdbool.h>
+#define TRIG   (1U << 4)   // PA4
+#define ECHO   (1U << 6)   // PB6
+#define IR_PIN (1U << 0)   // PE0
+#define Bus16_000MHz 24
+// Motor pins
+#define IN1 (1U << 0)
+#define IN2 (1U << 1)
+#define IN3 (1U << 2)
+#define IN4 (1U << 3)
 
-#include <stdint.h>
-#define MULTIPLIER 0.0343
+// LEDs on Port F
+#define RED_LED   (1U << 1)
+#define GREEN_LED (1U << 3)
 
+// Function prototypes
+void delayMs(int n);
+void init_ports(void);
+void init_ultrasonic(void);
+uint32_t measure_distance(void);
 
-// function prototypes for the motor
-void movestop(void);
-void moveforward(void);
-void movebackward(void);
-void turnright(void);
-void turnleft(void);
-void portB_init(void);
+void motor_forward(void);
+void motor_stop(void);
 
-//function prototypes for ultrasonic sensor
-#define ECHO (1U<<6) //PB6
-#define TRIG (1U<<4) //PA4(OUTPUT)
-#define BLUE_LED (1U<<2) //PF2 BLUE LED
+void uart5_init(void);
+void uart5_sendChar(char c);
+void uart5_sendString(char *str);
+char uart5_readChar(void);
 
-static uint32_t highEdge,lowEdge;
-static uint32_t ddistance;
-static const double _16MHz_1clock = 62.5e-9;
-void Delay_MicroSecond(uint32_t time);
-void Timer0_init(void);
-void portA_init(void);
-uint32_t measureD(void);
+// Modes
+#define MODE_AUTONOMOUS 0
+#define MODE_MANUAL     1
 
-//static uint32_t distance_in_cm;
+int mode = MODE_AUTONOMOUS;
 
-//function prototypes for servo
-#define PA3 0x08
-void servo_init(int pin);
-void servo_45_degree(int pin);
-void servo_90_degree(int pin);
-void servo_135_degree(int pin);
+// ==========================================================
+// MAIN
+// ==========================================================
+int main(void)
+{
+    uint32_t dist, ir;
+    char rx;
 
-//miscellaneous functions
-uint32_t lookright(int pin);
-uint32_t read_distance(void);
-uint32_t lookleft(int pin);
+    init_ports();
+    init_ultrasonic();
+    uart5_init();
 
-//variables
-#define maximum_distance 200
- static bool goesforward =false;
- static uint32_t distance=100;
+    uart5_sendString("System Ready. Mode = Autonomous\r\n");
 
-int main(void) {
-
-    //initialisation of the motors
-    portB_init();
-
-    // initialization of the ultrasonic sensor
-    portA_init();
-    Timer0_init();
-    //initialization for the servo
-    servo_init(PA3);
-
-    servo_90_degree(PA3);
-    Delay_MicroSecond(2000000);
-
-    distance=read_distance();
-    Delay_MicroSecond(100000);
-
-    distance=read_distance();
-    Delay_MicroSecond(100000);
-
-    distance=read_distance();
-    Delay_MicroSecond(100000);
-
-    distance=read_distance();
-    Delay_MicroSecond(100000);
-
-    while(1) {
-        uint32_t distanceright=0;
-        uint32_t distanceleft=0;
-        Delay_MicroSecond(50000);
-
-        if(distance<=20)
+    while (1)
+    {
+        // -------- Bluetooth Check ----------
+        if (!(UART5->FR & (1U << 4)))
         {
-            movestop();
-            Delay_MicroSecond(300000);
-            movebackward();
-            Delay_MicroSecond(40000);
-            movestop();
-            Delay_MicroSecond(300000);
-            distanceright=lookright(PA3);
-            Delay_MicroSecond(300000);
-            distanceleft=lookleft(PA3);
-            Delay_MicroSecond(300000);
+            rx = uart5_readChar();
 
-            if(distance>=distanceleft)
-            {
-                turnright();
-                movestop();
-
-            }else
-            {
-                turnleft();
-                movestop();
-
+            if (rx == 'A') {
+                mode = MODE_AUTONOMOUS;
+                uart5_sendString("Switched to Autonomous Mode\r\n");
             }
-
-        }else
-        {
-            moveforward();
+            else if (rx == 'M') {
+                mode = MODE_MANUAL;
+                uart5_sendString("Switched to Manual Mode\r\n");
+            }
+            else if (mode == MODE_MANUAL)
+            {
+                if (rx == '1') {
+                    motor_forward();
+                    uart5_sendString("Car moving forward\r\n");
+                }
+                else if (rx == '2') {
+                    motor_stop();
+                    uart5_sendString("Car stopping\r\n");
+                }
+            }
         }
 
-        distance=read_distance();
-    }
+        // -------- Autonomous Mode ----------
+        if (mode == MODE_AUTONOMOUS)
+        {
+            dist = measure_distance();
+            ir   = GPIOE->DATA & IR_PIN;
 
-}
-
-//miscallaneous functions
-uint32_t lookright(int pin)
-{
-    servo_45_degree(pin);
-    Delay_MicroSecond(500000);
-    uint32_t distance=read_distance();
-    Delay_MicroSecond(100000);
-    servo_90_degree(pin);
-    return distance;
-}
-uint32_t lookleft(int pin)
-{
-    servo_135_degree(pin);
-    Delay_MicroSecond(500000);
-    uint32_t distance=read_distance();
-    Delay_MicroSecond(100000);
-    servo_90_degree(pin);
-    return distance;
-}
-
-uint32_t read_distance(void){
-    Delay_MicroSecond(70000);
-    uint32_t cm=measureD();
-    if(cm==0){
-        cm=250;
-    }
-    return cm;
-}
-
-
-
-//functions for motor
-
-void portB_init(void){
-    SYSCTL_RCGC2_R |= 0x02;
-    ;
-    ;
-    ;
-  //port B initialization
-    GPIO_PORTB_LOCK_R=GPIO_LOCK_KEY;
-    GPIO_PORTB_CR_R=0x0E;
-
-    GPIO_PORTB_AFSEL_R |=0x0;
-    GPIO_PORTB_DEN_R |=0x0F;
-    GPIO_PORTB_DIR_R |=0x0F;
-
-}
-
-void left_motor_forward(void){
-    //set PB0
-GPIO_PORTB_DATA_R |=0x01;
-//clear PB1
-GPIO_PORTB_DATA_R &= (~0x02);
-}
-
-void left_motor_backward(void){
-    //clear PB0
-    GPIO_PORTB_DATA_R &=(~0x01);
-    //set PB1
-    GPIO_PORTB_DATA_R |= 0x02;
-
-}
-
-void left_motor_stop(void){
-    //clear PB0,PB1
-    GPIO_PORTB_DATA_R &=(~0x03);
-}
-
-void right_motor_forward(void){
-    //set PB2
-GPIO_PORTB_DATA_R |=0x04;
-//clear PB3
-GPIO_PORTB_DATA_R &= (~0x08);
-}
-
-void right_motor_backward(void){
-    //set PB3
-GPIO_PORTB_DATA_R |=0x08;
-//clear PB2
-GPIO_PORTB_DATA_R &= (~0x04);
-}
-
-void right_motor_stop(void){
-    //clear PB3,PB2
-    GPIO_PORTB_DATA_R &=(~0x0C);
-}
-
-void movestop(){
-    left_motor_stop();
-    right_motor_stop();
-}
-
-void moveforward() {
-
-    left_motor_forward();
-    right_motor_forward();
-
-}
-
-
-    void movebackward() {
-
-    left_motor_backward();
-    right_motor_backward();
-
-}
-
-void turnright(){
-    left_motor_forward();
-    right_motor_backward();
-}
-
-void turnleft() {
-    right_motor_forward();
-    left_motor_backward();
-}
-
-
-
-//functions for servo
-
-void servo_init(int pin){
-    SYSCTL_RCGC2_R |=0x01;
-    GPIO_PORTA_DIR_R |=pin;
-    GPIO_PORTA_DEN_R |=pin;
-}
-
-//use timer1A for delay
-void Delay_MicroSecond(uint32_t time){
-    int i;
-    SYSCTL_RCGCTIMER_R |=0x02;
-    TIMER1_CTL_R =0x0;
-    TIMER1_CFG_R =0x04;
-    TIMER1_TAMR_R =0x02;
-    TIMER1_TAILR_R =16-1;
-    TIMER1_ICR_R =0x1;
-    TIMER1_CTL_R |=0x1;
-    for(i=0;i<time;i++){
-        while((TIMER1_RIS_R & 0x01)==0);
-        TIMER1_ICR_R=0x1;
-    }
-
-}
-
-void servo_45_degree(int pin){
-    int i;
-    for(i=0;i<50;i++){
-    GPIO_PORTA_DATA_R |=pin;
-    Delay_MicroSecond(2100);
-    GPIO_PORTA_DATA_R &=~(pin);
-    Delay_MicroSecond(17900);
-    }
-
-}
-
-//straight
-
-void servo_90_degree(int pin){
-    int i;
-    for(i=0;i<50;i++){
-    GPIO_PORTA_DATA_R |=pin;
-    Delay_MicroSecond(3200);
-    GPIO_PORTA_DATA_R &=~(pin);
-    Delay_MicroSecond(16800);
-    }
-
-}
-
-void servo_135_degree(int pin){
-    int i;
-    for(i=0;i<50;i++){
-    GPIO_PORTA_DATA_R |=pin;
-    Delay_MicroSecond(43000);
-    GPIO_PORTA_DATA_R &=~(pin);
-    Delay_MicroSecond(15700);
-    }
-
-}
-
-
-
-//functions for ultrasonic sensor
-
-void Timer0_init(void){
-    SYSCTL_RCGCTIMER_R |=(1U<<0);
-    SYSCTL_RCGC2_R |=(1U<<1);
-    GPIO_PORTB_DIR_R &=~ECHO;
-    GPIO_PORTB_DEN_R |=ECHO;
-    GPIO_PORTB_AFSEL_R |=ECHO;
-    GPIO_PORTB_PCTL_R &=~0x0F000000;
-    GPIO_PORTB_PCTL_R |=0x07000000;
-
-    TIMER0_CTL_R &=~1;
-    TIMER0_CFG_R =0x04;
-    TIMER0_TAMR_R =0x17;
-    TIMER0_CTL_R |=0x0C;
-    TIMER0_CTL_R |=1;
-}
-
-void portA_init(void){
-SYSCTL_RCGC2_R |=(1U<<0);
-GPIO_PORTA_DIR_R |=TRIG;
-GPIO_PORTA_DEN_R |=TRIG;
-}
-
-uint32_t measureD(void)
-{
-    GPIO_PORTA_DATA_R &= ~TRIG;
-    Delay_MicroSecond(12);
-    GPIO_PORTA_DATA_R |=TRIG;
-    Delay_MicroSecond(12);
-    GPIO_PORTA_DATA_R &= ~TRIG;
-
-    TIMER0_ICR_R=4;
-    while((TIMER0_RIS_R & 4)==0){};
-        if(GPIO_PORTB_DATA_R & (1<<6)){
-            highEdge=TIMER0_TAR_R;
-            TIMER0_ICR_R=4;
-
-            while((TIMER0_RIS_R & 4)==0){};
-            lowEdge=TIMER0_TAR_R;
-                ddistance=lowEdge-highEdge;
-                ddistance = _16MHz_1clock * (double)MULTIPLIER * ddistance;
-
+            if (dist <= 25) {
+                motor_stop();
+                continue;
             }
-        return ddistance;
+
+            if (ir == 0) {
+                motor_forward();
+            } else {
+                motor_stop();
+            }
         }
+    }
+}
+
+// ==========================================================
+// PORT INITIALIZATION
+// ==========================================================
+void init_ports(void)
+{
+    SYSCTL->RCGCGPIO |= (1U<<0) | (1U<<1) | (1U<<4) | (1U<<5);
+
+    // Motor pins PB0–PB3
+    GPIOB->DIR |= (IN1 | IN2 | IN3 | IN4);
+    GPIOB->DEN |= (IN1 | IN2 | IN3 | IN4);
+
+    // TRIG PA4
+    GPIOA->DIR |= TRIG;
+    GPIOA->DEN |= TRIG;
+
+    // ECHO PB6
+    GPIOB->DIR &= ~ECHO;
+    GPIOB->DEN |= ECHO;
+    GPIOB->AFSEL |= ECHO;
+    GPIOB->PCTL &= ~(0xF << 24);
+    GPIOB->PCTL |=  (0x7 << 24);
+
+    // IR PE0
+    GPIOE->DIR &= ~IR_PIN;
+    GPIOE->DEN |= IR_PIN;
+
+    // LEDs PF1 (Red) & PF3 (Green)
+    SYSCTL->RCGCGPIO |= (1U << 5);  // Enable Port F clock
+    GPIOF->DIR |= RED_LED | GREEN_LED;
+    GPIOF->DEN |= RED_LED | GREEN_LED;
+}
+
+// ==========================================================
+// ULTRASONIC
+// ==========================================================
+void init_ultrasonic(void)
+{
+    SYSCTL->RCGCTIMER |= 1;
+
+    TIMER0->CTL &= ~1;
+    TIMER0->CFG = 0x04;
+    TIMER0->TAMR = 0x17;
+    TIMER0->CTL |= 0x0C;
+    TIMER0->CTL |= 1;
+}
+
+uint32_t measure_distance(void)
+{
+    uint32_t rising, falling, ticks;
+    float time, distance_cm;
+
+    GPIOA->DATA &= ~TRIG;
+    delayMs(1);
+    GPIOA->DATA |= TRIG;
+    delayMs(1);
+    GPIOA->DATA &= ~TRIG;
+
+    TIMER0->ICR = 4;
+    while ((TIMER0->RIS & 4) == 0);
+    rising = TIMER0->TAR;
+
+    TIMER0->ICR = 4;
+    while ((TIMER0->RIS & 4) == 0);
+    falling = TIMER0->TAR;
+
+    ticks = (falling > rising) ? (falling - rising) : (rising - falling);
+
+    time = ticks * 62.5e-9f;
+    distance_cm = (time * 34300) / 2;
+
+    return (uint32_t)distance_cm;
+}
+
+// ==========================================================
+// MOTOR CONTROL (with LEDs)
+// ==========================================================
+void motor_forward(void)
+{
+    GPIOB->DATA = IN1 | IN3;
+
+    // Green ON, Red OFF
+    GPIOF->DATA = GREEN_LED;
+}
+
+void motor_stop(void)
+{
+    GPIOB->DATA = 0;
+
+    // Red ON, Green OFF
+    GPIOF->DATA = RED_LED;
+}
+
+// ==========================================================
+// UART5 (HC-05 Bluetooth)
+// ==========================================================
+void uart5_init(void)
+{
+    SYSCTL->RCGCUART |= (1U << 5);
+    SYSCTL->RCGCGPIO |= (1U << 2);
+
+    GPIOC->AFSEL |= (1U << 4) | (1U << 5);
+    GPIOC->PCTL &= ~0x00FF0000;
+    GPIOC->PCTL |=  0x00110000;
+    GPIOC->DEN |= (1U << 4) | (1U << 5);
+
+    UART5->CTL &= ~1;
+    UART5->IBRD = 104;
+    UART5->FBRD = 11;
+    UART5->LCRH = 0x70;
+    UART5->CTL |= 0x301;
+}
+
+void uart5_sendChar(char c)
+{
+    while (UART5->FR & (1U << 5));
+    UART5->DR = c;
+}
+
+void uart5_sendString(char *str)
+{
+    while (*str)
+        uart5_sendChar(*str++);
+}
+
+char uart5_readChar(void)
+{
+    while (UART5->FR & (1U << 4));
+    return UART5->DR;
+}
+
+// ==========================================================
+// DELAY
+// ==========================================================
+void delayMs(int n)
+{
+    int i, j;
+    for (i=0; i<n; i++)
+        for (j=0; j<3180; j++);
+}
